@@ -1,0 +1,4 @@
+﻿.env.production
+geoserver-data
+nginx-conf/nginx.conf
+nginx-conf-staging/nginx.conf
