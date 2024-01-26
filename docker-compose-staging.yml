@@ -1,0 +1,78 @@
+version: "3.7"
+
+services:
+  geoserver:
+    image: kartoza/geoserver:latest
+    expose:
+      - 8080
+      - 8443
+    ports:
+      - 8081:8080
+    volumes:
+      - geoserver-data:/opt/geoserver/data_dir
+      - tomcat:/usr/local/tomcat/
+    environment:
+      GEOSERVER_DATA_DIR: /opt/geoserver/data_dir
+      GEOSERVER_ADMIN_USER: ${GEOSERVER_ADMIN_USER}
+      GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD}
+      TOMCAT_USER: ${TOMCAT_USER}
+      TOMCAT_PASSWORD: ${TOMCAT_PASSWORD}
+      GEOSERVER_CSRF_DISABLE: true
+      SAMPLE_DATA: true
+    networks:
+      - app-network
+  webserver:
+    image: nginx:stable
+    container_name: webserver
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - web-root:/var/www/html
+      - ./nginx-conf-staging:/etc/nginx/conf.d
+      - certbot-etc:/etc/letsencrypt
+      - certbot-var:/var/lib/letsencrypt
+      - ./dhparam:/etc/ssl/certs
+    depends_on:
+      - geoserver
+    networks:
+      - app-network
+    environment:
+      DOMAIN: ${DOMAIN}
+  certbot:
+    image: certbot/certbot
+    container_name: certbot
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-var:/var/lib/letsencrypt
+      - web-root:/var/www/html
+    environment:
+      DOMAIN: ${DOMAIN}
+      EMAIL: ${EMAIL}
+    depends_on:
+      - webserver
+    command: certonly --webroot --webroot-path=/var/www/html --email ${EMAIL} --agree-tos --no-eff-email --staging --force-renewal -d ${DOMAIN}
+
+volumes:
+  geoserver-data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /usr/share/docker/geoserver-https/geoserver-data/
+      o: bind
+  certbot-etc:
+  tomcat:
+    driver: local
+    driver_opts:
+      type: none
+      device: /usr/share/docker/geoserver-https/tomcat/
+      o: bind
+  certbot-var:
+  dhparam:
+  web-root:
+
+
+networks:
+  app-network:
+    driver: bridge

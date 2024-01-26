@@ -2,7 +2,7 @@
 
 This repository contains a docker-compose file to spin up Geoserver, nginx, and certbot to create a geoserver instance you can access via https.
 
-It needs some more work - in particular to remove some of the manual steps in the middle.
+Building this has been a massive learning exercise for me, if you have any improvements, please make a PR 😊
 
 ## Assumptions
 
@@ -140,74 +140,69 @@ sudo chmod -R 777 dhparam
 
 The `nginx.conf` file tells our nginx server what to do with incoming requests.
 
-The top quarter of the file deals with standard http requests (on port 80). the rest deals with secure requests on port 443.
+Looking at the template under [nginx.conf.template](./nginx-conf/nginx.conf.template), the top quarter of the file deals with standard http requests (on port 80). the rest deals with secure requests on port 443.
 
-There is a bit of monkey patching to be done here at the moment. The https part won't work until we use certbot to validate our domain.
+For our purposes we have two bits of complexity to deal with:
 
-But that can't work without the web server up for http requests.
+##### Variable substitution
 
-This also isn't smart enough to read our domain from a variable yet. So in short, we need to:
-
-1. replace "$Domain" in 4 places with 'map.fakedomain.com'
-2. remove the https part of the config file
-3. run the docker compose action and some other steps
-4. put the https part back in the file
-5. run some other steps
-
-For now, we need to make the file look like this:
-
-```conf
-server {
-        listen 80;
-        listen [::]:80;
-        server_name map.fakedomain.com;
-
-        location ~ /.well-known/acme-challenge {
-          allow all;
-          root /var/www/html;
-        }
-
-        location / {
-                rewrite ^ https://$host$request_uri? permanent;
-        }
-}
-
-```
-
-##### Future version
-
-**ToDo - I really want to fix this in a future version**
-
-The todo here is making two versions of the file, possibly two versions of docker-compose, and setting it up to use the necessary bits at different steps.
-
-There is also a job to be done to fill in the domain from an environment variable.
-
-### Build the images
-
-#### Note - if this is the first time
-
-If you are not sure what you are doing at this point, or this is the first run on the server, its probably worth doing all of this but adding `--staging` after the `--no-eff-email` argument to the command line on the certbot container action.
-
-This will do everything except get the certificates for real - so if something is wrong you'll see it.
-
-You can only request a real certbot certificate for a domain five times in 24 hours, so while playing with config its easy to lock you out
-
-You can view the logs for the certbot container by:
+we want to replace the palceholder `${DOMAIN}` with our map domain. To do that, run the script [make-nginx-config.sh](./make-nginx-config.sh)
 
 ```sh
-cd /usr/share/docker/geoserver-https
-docker compose logs certbot
+make-nginx-config.sh
 ```
 
-#### Run
+This will prompt you to enter your domain, e.g. 'map.fakedomain.com', without the quotes, or any leading or trailing spaces.
 
-`docker compose --env-file .env.production up`
+##### Versions
 
-On the first run, you may see this issue here: `docker: Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Post http://%2Fvar%2Frun%2Fdocker.sock/v1.35/containers/create: dial unix /var/run/docker.sock: connect: permission denied. See 'docker run --help'.
+When we first build the images, we need to do it without HTTPS. This is because the HTTPS depends on the work the certbot image is doing for us, but that depends on the webserver being up working on HTTP.
 
-If so, follow these steps to fix: <https://stackoverflow.com/questions/48957195/how-to-fix-docker-got-permission-denied-issue>`
+So we first get the certbot part correct (with the `-staging` docker-compose file, and the staging nginx config file).
 
-In a second window run `docker ps` - you should see other services spinning up. This will take a minute or two.
+This is why the script above makes two sets of files, one without the HTTPS Part
+
+### Run the staging install
+
+Finally we are ready to get started. We first want to run the [docker-compose-staging.yaml](./docker-compose-staging.yml) build.
+
+This uses the staging config for nginx, and it also adds `--staging` after the `--no-eff-email` argument to the command line on the certbot container action.
+
+This will do everything except get the certificates for real. This is so we can make sure getting the certificates will work and our command has no issues. You can only request a real certbot certificate for a domain five times in 24 hours, so while playing with config its easy to lock yourself out.
+
+We want to run:
+
+```sh
+docker compose -f docker-compose-staging.yml --env-file .env.production up
+```
+
+If you see this error:
+
+```sh
+docker: Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Post http://%2Fvar%2Frun%2Fdocker.sock/v1.35/containers/create: dial unix /var/run/docker.sock: connect: permission denied. See 'docker run --help'.
+```
+
+You can fix it following [these steps](<https://stackoverflow.com/questions/48957195/how-to-fix-docker-got-permission-denied-issue>)
+
+In a second window, we can see how this command is progressing by running
+
+```sh
+docker ps
+```
+
+After a few minutes we should see containers spinning up and doing stuff
+
+We can view the logs for the logs for the certbot container by running:
+
+```sh
+docker compose -f docker-compose-staging.yml logs certbot
+```
+
+And the logs for for all containers by running:
+
+```sh
+docker compose -f docker-compose-staging.yml logs
+```
 
 You should be able to see logs succeeeding on certbot - you need to do this in the same folder as docker-compose, i.e:
 
@@ -216,41 +211,100 @@ cd /usr/share/docker/geoserver-https
 docker compose logs certbot
 ```
 
-### Add https back to nginx.conf
+### Get into Geoserver and set the proxy URL
 
-Edit `nginx-conf/nginx.conf` to look like the original version in the repository, replacing "$Domain" with map.fakedomain.com 4 times.
+In our [docker-compose-staging.yaml](./docker-compose-staging.yml), we've opened port 8081 to the internet for geoserver, redirecting to port 8080 locally:
+
+```yaml
+      expose:
+        - 8080
+        - 8443
+      ports:
+        - 8081:8080
+      volumes:
+          - geoserver-data:/opt/geoserver/data_dir
+          - tomcat:/usr/local/tomcat/
+```
+
+This means we should be able to access our servers IP: 8081, e.g. `111.222.333.444:8080/geoserver`, and see the geoserver UI.
+
+To use our domain over https later, e.g `https://map.fakedomain.com/geoserver`, we need to configure a setting called the PROXY_URL in geoserver. That's explained in more detail [here](<https://docs.geoserver.org/stable/en/user/configuration/globalsettings.html>).
+
+You can set it through the user interface, logging in with the username and password from your `.env.production` file
+
+You should set it to <https://map.fakedomain.com/geoserver>, making sure you tick the use proxies box.
+
+### Run certbot for real
+
+Rebuild the certbot image only from [docker-compose-nostaging.yaml](./docker-compose-nostaging.yml).
+
+The only change here from [docker-compose-staging.yaml](./docker-compose-staging.yml) is removing the --staging paramter on the certbot startup command.
+
+```sh
+docker compose -f docker-compose-nostaging.yml --env-file .env.production up -d --force-recreate --no-deps certbot
+```
+
+If you run the logs for the certbot image `docker compose -f docker-compose-nostaging.yml logs certbot`, you should be able to see something like:
+
+```text
+Output
+Recreating certbot ... done
+Attaching to certbot
+certbot      | Account registered.
+certbot      | Renewing an existing certificate for your_domain and www.your_domain
+certbot      |
+certbot      | Successfully received certificate.
+certbot      | Certificate is saved at: /etc/letsencrypt/live/your_domain/fullchain.pem
+certbot      | Key is saved at:         /etc/letsencrypt/live/your_domain                               phd.com/privkey.pem
+certbot      | This certificate expires on 2022-11-03.
+certbot      | These files will be updated when the certificate renews.
+certbot      | NEXT STEPS:
+certbot      | - The certificate will need to be renewed before it expires. Cert                               bot can automatically renew the certificate in the background, but you may need                                to take steps to enable that functionality. See https://certbot.org/renewal-setu                               p for instructions.
+certbot      | Saving debug log to /var/log/letsencrypt/letsencrypt.log
+certbot      |
+certbot      | - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -                                - - - - - - -
+certbot      | If you like Certbot, please consider supporting our work by:
+certbot      |  * Donating to ISRG / Let's Encrypt:   https://letsencrypt.org/do                               nate
+certbot      |  * Donating to EFF:                    https://eff.org/donate-le
+certbot      | - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -                                - - - - - - -
+certbot exited with code 0
+```
 
 ### Rebuild webserver
 
-Once you have done this, destroy and recreate the webserver image without touchign anything else: `docker compose --env-file .env.production up -d --force-recreate --no-deps webserver`
+Once certbot is up and running, we can do the same for the webserver config that allows HTTPS.
+
+The only change to [docker-compose.yaml](docker-compose.yml) from [docker-compose-nostaging.yaml](./docker-compose-nostaging.yml) is which nginx config is used.
+
+```sh
+docker compose -f docker-compose.yml --env-file .env.production up -d --force-recreate --no-deps webserver
+```
+
+### Rebuild geoserver
+
+This extra step disables the 8081 port talking to geoserver.
+
+The only relevant change to [docker-compose.yaml](docker-compose.yml) from [docker-compose-staging.yaml](./docker-compose-staging.yml) is removing that port exposure line
+
+```sh
+docker compose -f docker-compose.yml --env-file .env.production up -d --force-recreate --no-deps geoserver
+```
 
 ### Setup geoserver reverse proxy
 
-At this point, you should be able to access `https://map.fakedomain.com/geoserver` - but you will get an error if you try and log in <https://stackoverflow.com/questions/74755384/why-kartoza-geoserver-cant-let-me-loggin-in>.
-
-Much earlier, we exposed port 8081 directly, to get to the geoserver insecurely.
-
-We've done that so we can set the http_proxy_url, which should be set to <https://map.fakedomain.com/geoserver>
-
-make sure you tick the use proxies box - you'll break the server if you don't.
-
-That is explained in a bit more detail here <https://docs.geoserver.org/stable/en/user/configuration/globalsettings.html>
-
-#### Future version
-
-Per the stackoverflow link above, <https://stackoverflow.com/questions/74755384/why-kartoza-geoserver-cant-let-me-loggin-in>, this should work without the workaround of setting manually if we use the environment variables on the kartoza image (HTTP_PROXY_NAME and HTTP_SCHEME). At the timing of writing, it didn't.
-
-It would be nice to work out how to do this without needing to go through this manual work. Either by working out why setting thoes variables did not work, or by setting this manually in the tomcat files we use below.
+At this point, you should be able to access `https://map.fakedomain.com/geoserver` - but you will get an error if you try and log in. This is explained [here](<https://stackoverflow.com/questions/74755384/why-kartoza-geoserver-cant-let-me-loggin-in>).
 
 ### Try to login
 
 You should at this point be able to access <https://map.fakedomain.com> to login.
 
-However, if you go to try and say add a workspace, on the save action, you'll get odd 400 errors. This is CORS rearing its ugly head. You need to tell tomcat we're not spoofing ourselves.
+However, if you go to try and say add a workspace, on the save action, you'll get 400 errors. This is CORS rearing its ugly head. You need to tell tomcat we're not spoofing ourselves.
 
-You can do that by editing `/usr/share/docker/geoserver-https/tomcat/webapps/geoserver/WEB-INF/web.xml`. The necessary change is explained in more detail here: <https://stackoverflow.com/questions/66526411/geoserver-advice-please-http-status-400-bad-request>
+You can do that by editing `/usr/share/docker/geoserver-https/tomcat/webapps/geoserver/WEB-INF/web.xml`. The necessary change is explained in more detail [here](<https://stackoverflow.com/questions/66526411/geoserver-advice-please-http-status-400-bad-request>).
 
 But you need to whitelist our domain and allow cross origin requests explicitly.
+
+You need to add this to the file:
 
 ```xml
 
@@ -288,6 +342,12 @@ This setup was largely based on this guide: <https://www.digitalocean.com/commun
 Understanding letsencrypt also borrowed from this guide: <https://phoenixnap.com/kb/letsencrypt-docker>
 
 Understanding reverse proxy with ngingx borrowed from this stackoverflow answer: <https://stackoverflow.com/questions/76717951/how-to-get-a-docker-image-on-a-digitalocean-droplet-to-have-https>
+
+## Potential improvements
+
+### Setting PROXY_URL
+
+Per the [stackoverflow issue linked above](<https://stackoverflow.com/questions/74755384/why-kartoza-geoserver-cant-let-me-loggin-in>), setting proxy url should be doable by setting environment variables on the kartoza geoserver image we are using (HTTP_PROXY_NAME and HTTP_SCHEME) within docker compose. At the timing of writing, this didn't work - hence this workaround of exposing port 8081 and using the UI.
 
 ## Acknowledgements
 
