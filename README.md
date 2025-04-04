@@ -83,12 +83,15 @@ cd /usr/share/docker
 git clone git@github.com:jaketclarke/geoserver-https.git
 sudo chgrp -R docker geoserver-https/
 sudo chmod g+s /usr/share/docker
+sudo chmod g+s geoserver-https/
 sudo chmod -R 777 geoserver-https/
 ```
 
 ### Configure code
 
 #### Setup environment variables
+
+`cd geoserver-https`
 
 This will create a copy of the .env template for you: `cp .env .env.production`
 
@@ -149,7 +152,7 @@ For our purposes we have two bits of complexity to deal with:
 we want to replace the palceholder `${DOMAIN}` with our map domain. To do that, run the script [make-nginx-config.sh](./make-nginx-config.sh)
 
 ```sh
-make-nginx-config.sh
+./make-nginx-config.sh
 ```
 
 This will prompt you to enter your domain, e.g. 'map.fakedomain.com', without the quotes, or any leading or trailing spaces.
